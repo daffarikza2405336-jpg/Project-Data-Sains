@@ -13,6 +13,9 @@ charts, a statistics lab, model evaluation, and session-scoped project history.
 - Use the clearly labeled synthetic demo dataset or upload a CSV/XLSX file up to
   50 MB.
 - Inspect dataset dimensions, missing cells, duplicates, types, and unique values.
+- Compare categorical and continuous feature distributions by target class, view
+  the target balance, and explore correlations between selected numeric features
+  from the overview dashboard.
 - Search across dataset values and download the active dataset as CSV or Excel,
   including a column profile sheet in the Excel file.
 - Impute feature missing values, drop missing/duplicate rows, cap feature
@@ -47,10 +50,11 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
-python -m streamlit run app.py
+python app.py
 ```
 
-Open the local URL printed by Streamlit, usually `http://localhost:8501`.
+This starts Streamlit on `http://localhost:8501` and opens the app in your
+default browser. You can also launch it with `python -m streamlit run app.py`.
 
 For an uploaded CSV/XLSX, select the target column in the sidebar. Model Studio
 currently supports classification targets with at least two classes and at least

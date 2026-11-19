@@ -4,6 +4,9 @@ from io import BytesIO
 import hashlib
 import html
 import secrets
+import subprocess
+import sys
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -11,6 +14,27 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+
+if __name__ == "__main__" and not st.runtime.exists():
+    app_path = Path(__file__).resolve()
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "streamlit",
+            "run",
+            str(app_path),
+            "--server.address=localhost",
+            "--server.port=8501",
+            "--server.headless=false",
+        ],
+        cwd=app_path.parent,
+        check=True,
+        input="\n",
+        text=True,
+    )
+    raise SystemExit(0)
+
 from scipy import stats
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier
@@ -605,7 +629,227 @@ if page == "Overview Dashboard":
     metric_cols[4].metric("Data completeness", f"{quality:.1f}%")
     st.caption("Kelengkapan = 100% dikurangi proporsi sel kosong; dihitung dari dataset aktif.")
 
-    st.markdown('<div class="section-label">02 / Isi dataset aktif</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-label">02 / Distribusi variabel</div>', unsafe_allow_html=True)
+    profile_cols = st.columns([0.9, 3.1])
+    feature_columns = [column for column in data.columns if column != target]
+    numeric_features = [
+        column
+        for column in feature_columns
+        if pd.api.types.is_numeric_dtype(data[column])
+    ]
+    categorical_features = [
+        column
+        for column in feature_columns
+        if not pd.api.types.is_numeric_dtype(data[column])
+        or data[column].nunique(dropna=True) <= 20
+    ]
+
+    with profile_cols[0]:
+        st.subheader("Pengaturan")
+        selected_categorical: Any = None
+        selected_continuous: Any = None
+        selected_correlations: list[Any] = []
+        if categorical_features:
+            selected_categorical = st.selectbox(
+                "Variabel kategorikal",
+                categorical_features,
+                key=f"overview_categorical_{chart_dataset_id}",
+            )
+        else:
+            st.info("Tidak ada fitur kategorikal yang dapat ditampilkan.")
+        if numeric_features:
+            selected_continuous = st.selectbox(
+                "Variabel kontinu",
+                numeric_features,
+                key=f"overview_continuous_{chart_dataset_id}",
+            )
+            selected_correlations = st.multiselect(
+                "Kolom correlation matrix",
+                numeric_features,
+                default=numeric_features[:12],
+                max_selections=12,
+                key=f"overview_correlations_{chart_dataset_id}",
+            )
+        else:
+            st.info("Tidak ada fitur numerik untuk distribusi kontinu atau korelasi.")
+
+        st.subheader("Distribusi target")
+        target_distribution = (
+            data[target].dropna().astype(str).value_counts()
+            .rename_axis("Kelas").reset_index(name="Jumlah")
+        )
+        if target_distribution.empty:
+            st.info("Kolom target tidak memiliki nilai untuk ditampilkan.")
+        else:
+            target_figure = px.pie(
+                target_distribution,
+                names="Kelas",
+                values="Jumlah",
+                hole=0.62,
+                color_discrete_sequence=["#c9f36a", "#a78bfa", "#67e8f9", "#fb7185"],
+            )
+            target_figure.update_layout(
+                margin=dict(t=10, b=10, l=0, r=0),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                font_color="#d7def1",
+                legend_title_text="",
+            )
+            st.plotly_chart(target_figure, use_container_width=True)
+
+    with profile_cols[1]:
+        distribution_cols = st.columns(2)
+        with distribution_cols[0]:
+            st.subheader("Distribusi kategorikal")
+            if selected_categorical is None:
+                st.info("Pilih dataset dengan fitur kategorikal untuk menampilkan grafik.")
+            else:
+                category_data = data[[selected_categorical, target]].copy()
+                category_data.columns = ["_category", "_target"]
+                category_data["_category"] = (
+                    category_data["_category"].astype("string").fillna("(Kosong)")
+                )
+                category_data["_target"] = category_data["_target"].astype("string")
+                category_data = category_data.dropna(subset=["_target"])
+                top_categories = category_data["_category"].value_counts().head(12).index
+                overflow = ~category_data["_category"].isin(top_categories)
+                has_other_categories = bool(overflow.any())
+                category_data.loc[overflow, "_category"] = "Lainnya"
+                category_counts = (
+                    category_data.groupby(["_category", "_target"], observed=True)
+                    .size()
+                    .rename("Jumlah")
+                    .reset_index()
+                )
+                category_order = (
+                    category_counts.groupby("_category", observed=True)["Jumlah"]
+                    .sum()
+                    .sort_values(ascending=False)
+                    .index.astype(str)
+                    .tolist()
+                )
+                if category_counts.empty:
+                    st.info("Tidak ada baris dengan nilai target untuk ditampilkan.")
+                else:
+                    category_figure = px.bar(
+                        category_counts,
+                        x="_category",
+                        y="Jumlah",
+                        color="_target",
+                        barmode="stack",
+                        category_orders={"_category": category_order},
+                        color_discrete_sequence=["#c9f36a", "#a78bfa", "#67e8f9", "#fb7185"],
+                        labels={"_category": str(selected_categorical), "_target": "Target"},
+                    )
+                    category_figure.update_layout(
+                        margin=dict(t=10, b=10, l=10, r=10),
+                        paper_bgcolor="rgba(0,0,0,0)",
+                        plot_bgcolor="rgba(0,0,0,0)",
+                        font_color="#d7def1",
+                        legend_title_text="",
+                    )
+                    st.plotly_chart(category_figure, use_container_width=True)
+                    if has_other_categories:
+                        st.caption("Grafik menampilkan 12 kategori teratas; sisanya digabung sebagai Lainnya.")
+
+        with distribution_cols[1]:
+            st.subheader("Distribusi kontinu")
+            if selected_continuous is None:
+                st.info("Pilih dataset dengan fitur numerik untuk menampilkan grafik.")
+            else:
+                density_data = data[[selected_continuous, target]].copy()
+                density_data.columns = ["_value", "_target"]
+                density_data["_value"] = pd.to_numeric(density_data["_value"], errors="coerce")
+                density_data = density_data.dropna(subset=["_value", "_target"])
+                finite_values = np.isfinite(density_data["_value"].to_numpy(dtype=float))
+                density_data = density_data.loc[finite_values]
+                density_data["_target"] = density_data["_target"].astype(str)
+                density_frames: list[pd.DataFrame] = []
+                skipped_classes: list[str] = []
+                sampled_classes: list[str] = []
+                for class_name in density_data["_target"].unique():
+                    values = density_data.loc[
+                        density_data["_target"] == class_name, "_value"
+                    ].to_numpy(dtype=float)
+                    if len(values) < 2 or np.unique(values).size < 2:
+                        skipped_classes.append(class_name)
+                        continue
+                    if len(values) > 5000:
+                        values = pd.Series(values).sample(n=5000, random_state=42).to_numpy()
+                        sampled_classes.append(class_name)
+                    value_grid = np.linspace(values.min(), values.max(), 200)
+                    density_frames.append(
+                        pd.DataFrame(
+                            {
+                                "Nilai": value_grid,
+                                "Kepadatan": stats.gaussian_kde(values)(value_grid),
+                                "Kelas": class_name,
+                            }
+                        )
+                    )
+                if density_frames:
+                    density_figure = px.line(
+                        pd.concat(density_frames, ignore_index=True),
+                        x="Nilai",
+                        y="Kepadatan",
+                        color="Kelas",
+                        color_discrete_sequence=["#c9f36a", "#a78bfa", "#67e8f9", "#fb7185"],
+                    )
+                    density_figure.update_layout(
+                        margin=dict(t=10, b=10, l=10, r=10),
+                        paper_bgcolor="rgba(0,0,0,0)",
+                        plot_bgcolor="rgba(0,0,0,0)",
+                        font_color="#d7def1",
+                        legend_title_text="Target",
+                    )
+                    st.plotly_chart(density_figure, use_container_width=True)
+                    if skipped_classes:
+                        st.caption(
+                            "Kepadatan tidak dihitung untuk kelas dengan kurang dari dua "
+                            "nilai berbeda: " + ", ".join(skipped_classes)
+                        )
+                    if sampled_classes:
+                        st.caption(
+                            "Estimasi kepadatan menggunakan sampel maksimum 5.000 baris "
+                            "untuk kelas: " + ", ".join(sampled_classes)
+                        )
+                else:
+                    st.info("Belum cukup nilai numerik yang bervariasi untuk menghitung kepadatan.")
+
+        st.subheader("Correlation Matrix")
+        if not selected_correlations:
+            st.info("Pilih setidaknya satu fitur numerik untuk menampilkan correlation matrix.")
+        else:
+            correlation_matrix = data[selected_correlations].corr()
+            if not correlation_matrix.notna().to_numpy().any():
+                st.info("Korelasi tidak dapat dihitung; periksa apakah fitur memiliki variasi nilai.")
+            else:
+                correlation_labels = [
+                    str(column) if len(str(column)) <= 18 else f"{str(column)[:15]}…"
+                    for column in selected_correlations
+                ]
+                correlation_figure = px.imshow(
+                    correlation_matrix,
+                    x=correlation_labels,
+                    y=correlation_labels,
+                    text_auto=".2f",
+                    zmin=-1,
+                    zmax=1,
+                    color_continuous_scale="Plasma",
+                    aspect="auto",
+                )
+                correlation_figure.update_layout(
+                    margin=dict(t=10, b=10, l=10, r=10),
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    font_color="#d7def1",
+                    coloraxis_colorbar_title="Korelasi",
+                )
+                correlation_figure.update_xaxes(tickangle=-35, tickfont={"size": 9})
+                correlation_figure.update_yaxes(tickfont={"size": 9})
+                st.plotly_chart(correlation_figure, use_container_width=True)
+
+    st.markdown('<div class="section-label">03 / Isi dataset aktif</div>', unsafe_allow_html=True)
     dataset_info_cols = st.columns([1.5, 1])
     with dataset_info_cols[0]:
         st.subheader("Cuplikan data")
@@ -623,34 +867,12 @@ if page == "Overview Dashboard":
         )
         st.dataframe(column_profile, use_container_width=True, hide_index=True)
 
-    st.markdown('<div class="section-label">03 / At a glance</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-label">04 / At a glance</div>', unsafe_allow_html=True)
     chart_cols = st.columns([1.1, 1.9])
     with chart_cols[0]:
         st.subheader("Komposisi target")
-        composition_tabs = st.tabs(["Ringkasan", "Line chart", "Candlestick"])
+        composition_tabs = st.tabs(["Line chart", "Candlestick"])
         with composition_tabs[0]:
-            distribution = (
-                data[target].dropna().astype(str).value_counts()
-                .rename_axis("Kelas").reset_index(name="Jumlah")
-            )
-            st.plotly_chart(
-                px.pie(
-                    distribution,
-                    names="Kelas",
-                    values="Jumlah",
-                    hole=0.68,
-                    color_discrete_sequence=["#c9f36a", "#a78bfa", "#67e8f9", "#fb7185"],
-                ).update_layout(
-                    margin=dict(t=10, b=10, l=10, r=10),
-                    paper_bgcolor="rgba(0,0,0,0)",
-                    plot_bgcolor="rgba(0,0,0,0)",
-                    font_color="#d7def1",
-                    legend_title_text="",
-                ),
-                use_container_width=True,
-            )
-
-        with composition_tabs[1]:
             group_columns = [column for column in data.columns if column != target]
             if not group_columns:
                 st.info("Tambahkan setidaknya satu fitur selain kolom target untuk membuat line chart.")
@@ -713,7 +935,7 @@ if page == "Overview Dashboard":
                 elif line_data.empty:
                     st.info("Tidak ada baris lengkap untuk fitur pengelompokan dan target yang dipilih.")
 
-        with composition_tabs[2]:
+        with composition_tabs[1]:
             st.caption("Grafik candlestick hanya menggunakan kolom OHLC aktual dari dataset.")
             numeric_columns = data.select_dtypes(include=np.number).columns.tolist()
             normalized_columns = {
